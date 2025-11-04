@@ -1,5 +1,7 @@
 # calculator
 this is the first lab given to us
+## How to run 
+check the instructions from [how to run file](./setup.md)
 ## Assignments
 
 | Person | Task | Branch Name | Notes |

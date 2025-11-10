@@ -1,4 +1,6 @@
 import typer
+import typing
+from typing import Optional
 from rich import print
 from rich.console import Console
 from rich.table import Table
@@ -6,7 +8,7 @@ import utils.operators as operators  # <- clearer alias
 
 app = typer.Typer()
 console = Console()
-
+    
 
 @app.command()
 def version():
@@ -40,7 +42,7 @@ def divide(a: int, b:int):
 def to_numbers(value: str):
     """
     Tried to use operators.to_numbers if available; otherwise attempt a best-effort parse.
-    Prints a table of parsed numeric values.
+    Prints a table of parsed numeric values like the others.
     """
     nums = None
     if hasattr(operators, "to_numbers"):
@@ -59,7 +61,7 @@ def to_numbers(value: str):
                 else:
                     parsed.append(int(p))
             except Exception:
-                # couldn't parse, keep raw
+                # this is if it couldn't parse, it should keep raw
                 parsed.append(p)
         nums = parsed
 
@@ -69,7 +71,7 @@ def to_numbers(value: str):
 
 @app.command()
 def add(a: float, b: float):
-    """Add two numbers using operators.add if present, otherwise fallback to local add."""
+    """Add two numbers using operators.add if it there, otherwise fallback to local add."""
     if hasattr(operators, "add"):
         result = operators.add(a, b)
     else:
@@ -80,7 +82,7 @@ def add(a: float, b: float):
 
 @app.command()
 def subtract(a: float, b: float):
-    """Subtract two numbers using operators.subtract if present, otherwise fallback."""
+    """Subtract two numbers using operators.subtract if its there, otherwise fallback."""
     if hasattr(operators, "subtract"):
         result = operators.subtract(a, b)
     else:
@@ -118,6 +120,156 @@ def call(op_name: str, args: str = typer.Argument("", help="space/comma separate
     table = Table("operation", "answer")
     table.add_row(f"{op_name}({', '.join(map(str, parsed))})", str(result))
     console.print(table)
+
+# simple fallback in-process memory store (used if utils.operators doesn't provide one)
+_MEMORY: dict = {}
+
+def _parse_value_for_store(value: str):
+    """Try to convert to int/float using operators.to_numbers if available, else fallback."""
+    if hasattr(operators, "to_numbers"):
+        try:
+            nums = operators.to_numbers(value)
+            # if operators.to_numbers returns a single value or list, prefer the first scalar
+            if isinstance(nums, (list, tuple)) and len(nums) == 1:
+                return nums[0]
+            return nums
+        except Exception:
+            pass
+    # fallback single-value parse
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except Exception:
+        return value
+
+def _memory_set(key: str, value):
+    """Set a key in whichever memory backend is available or fallback to local _MEMORY."""
+    # check for common placements in utils.operators
+    if hasattr(operators, "memory") and isinstance(getattr(operators, "memory"), dict):
+        getattr(operators, "memory")[key] = value
+        return True
+    if hasattr(operators, "memory_set"):
+        getattr(operators, "memory_set")(key, value)
+        return True
+    if hasattr(operators, "store"):
+        getattr(operators, "store")(key, value)
+        return True
+    # fallback
+    _MEMORY[key] = value
+    return True
+
+def _memory_get(key: str):
+    """Get a key from backend or fallback; returns (found_flag, value)"""
+    if hasattr(operators, "memory") and isinstance(getattr(operators, "memory"), dict):
+        mem = getattr(operators, "memory")
+        return (key in mem, mem.get(key))
+    if hasattr(operators, "memory_get"):
+        try:
+            val = getattr(operators, "memory_get")(key)
+            return (True, val)
+        except Exception:
+            return (False, None)
+    if hasattr(operators, "recall"):
+        try:
+            val = getattr(operators, "recall")(key)
+            return (True, val)
+        except Exception:
+            return (False, None)
+    # fallback
+    return (key in _MEMORY, _MEMORY.get(key))
+
+def _memory_clear(key: Optional[str] = None):
+    """Clear one key or all keys in backend or fallback."""
+    if hasattr(operators, "memory") and isinstance(getattr(operators, "memory"), dict):
+        mem = getattr(operators, "memory")
+        if key is None:
+            mem.clear()
+        else:
+            mem.pop(key, None)
+        return True
+    if hasattr(operators, "memory_clear"):
+        getattr(operators, "memory_clear")(key) if key is not None else getattr(operators, "memory_clear")()
+        return True
+    if hasattr(operators, "clear_memory"):
+        getattr(operators, "clear_memory")(key) if key is not None else getattr(operators, "clear_memory")()
+        return True
+    # fallback
+    if key is None:
+        _MEMORY.clear()
+    else:
+        _MEMORY.pop(key, None)
+    return True
+
+def _memory_items():
+    """Return mapping of memory items from backend or fallback."""
+    if hasattr(operators, "memory") and isinstance(getattr(operators, "memory"), dict):
+        return dict(getattr(operators, "memory"))
+    if hasattr(operators, "memory_items"):
+        try:
+            return dict(getattr(operators, "memory_items")())
+        except Exception:
+            pass
+    if hasattr(operators, "list_memory"):
+        try:
+            return dict(getattr(operators, "list_memory")())
+        except Exception:
+            pass
+    return dict(_MEMORY)
+
+@app.command()
+def mem_set(key: str, value: str):
+    """
+    Store a value under a key into the memory backend (or local fallback).
+    Value will be parsed as int/float when reasonable.
+    """
+    parsed = _parse_value_for_store(value)
+    _memory_set(key, parsed)
+    table = Table("action", "key", "value")
+    table.add_row("set", key, str(parsed))
+    console.print(table)
+
+@app.command()
+def mem_get(key: str):
+    """Retrieve a value from memory (prints not-found as well)."""
+    found, val = _memory_get(key)
+    table = Table("action", "key", "value")
+    table.add_row("get", key, str(val) if found else "[red]<not found>[/red]")
+    console.print(table)
+
+@app.command()
+def mem_clear(key: Optional[str] = typer.Argument(None, help="key to clear; omit to clear all")):
+    """Clear a key from memory or clear all if no key provided."""
+    _memory_clear(key)
+    table = Table("action", "key")
+    table.add_row("clear", str(key) if key is not None else "<all>")
+    console.print(table)
+
+@app.command()
+def mem_list():
+    """List all memory keys and values."""
+    items = _memory_items()
+    table = Table("key", "value")
+    if not items:
+        table.add_row("<empty>", "")
+    else:
+        for k, v in items.items():
+            table.add_row(str(k), str(v))
+    console.print(table)
+
+@app.command()
+def ops_list():
+    """List callable functions available in utils.operators."""
+    names = [n for n in dir(operators) if not n.startswith("_")]
+    callables = [n for n in names if callable(getattr(operators, n))]
+    table = Table("callable ops")
+    if not callables:
+        table.add_row("<none>")
+    else:
+        for n in sorted(callables):
+            table.add_row(n)
+    console.print(table)
+
 
 if __name__ == "__main__":
     app()
